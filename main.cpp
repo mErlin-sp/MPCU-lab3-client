@@ -4,6 +4,7 @@
 #include <netinet/in.h>
 #include <csignal>
 #include <cstring>
+#include <fstream>
 
 const std::string PROTOCOL_VERSION = "1.4.8.8";
 
@@ -88,7 +89,7 @@ int parse_headers(const char *buffer, char *&c, int bytes_received, std::string 
     return 0;
 }
 
-int read(char *buffer, size_t buffer_length, int sock) {
+size_t read(char *buffer, size_t buffer_length, int sock) {
     char *c = &buffer[0];
     bool eot = false;
 
@@ -96,20 +97,21 @@ int read(char *buffer, size_t buffer_length, int sock) {
         char recv_buffer[buffer_length];
         char *cc = &recv_buffer[0];
 
-        int bytes_received = recv(sock, recv_buffer, buffer_length, 0);
+        int bytes_received = recv(sock, recv_buffer, (&buffer[0] + buffer_length) - c, 0);
         if (bytes_received == -1) {
             perror("Receive failed");
             throw std::runtime_error("Receive failed");
         }
 
         // Print the received data
-        std::cout << "Receive Buffer: ";
-        std::cout.write(recv_buffer, bytes_received);
-        std::cout << std::endl;
+        std::cout << "Bytes received: " << bytes_received << std::endl;
+//        std::cout << "Receive Buffer: ";
+//        std::cout.write(recv_buffer, bytes_received);
+//        std::cout << std::endl;
 
 
         for (; (cc - &recv_buffer[0]) < bytes_received; cc++) {
-            std::cout << cc[0] << std::endl;
+//            std::cout << cc[0] << std::endl;
             if (c - &buffer[0] > buffer_length) {
                 throw std::runtime_error("Buffer overflow");
             }
@@ -119,12 +121,16 @@ int read(char *buffer, size_t buffer_length, int sock) {
 
             if (*cc == 0x4) {
                 std::cout << "EOT" << std::endl;
+                *c = '\0';
                 eot = true;
                 std::cout << "Receive End" << std::endl;
                 break;
             }
         }
         std::cout << "Receive Buffer End" << std::endl;
+        if (c - &buffer[0] >= buffer_length) {
+            return buffer_length;
+        }
     }
     return c - &buffer[0];
 }
@@ -166,13 +172,13 @@ int main(int argc, char *argv[]) {
     try {
         const int BUFFER_SIZE = 1024;
 
-        char new_buffer[BUFFER_SIZE];
-        char *c = &new_buffer[0];
+        char buffer[BUFFER_SIZE];
+        char *c = &buffer[0];
 
         // Sending NEW request
-        sprintf(new_buffer, "PROTO:%s#NEW#%s\x1c#\x4", PROTOCOL_VERSION.c_str(), fileName.c_str());
+        sprintf(buffer, "PROTO:%s#NEW#%s\x1c#\x4", PROTOCOL_VERSION.c_str(), fileName.c_str());
 
-        if (send(sock, new_buffer, strlen(new_buffer), 0) == -1) {
+        if (send(sock, buffer, strlen(buffer), 0) == -1) {
             perror("Send failed");
             throw std::runtime_error("Send failed");
         }
@@ -214,15 +220,15 @@ int main(int argc, char *argv[]) {
 //        }
 
         // Receive NEW response
-        read(new_buffer, BUFFER_SIZE, sock);
+        read(buffer, BUFFER_SIZE, sock);
 
         // Print the full received data
-        std::cout << "Received from server: " << new_buffer << std::endl;
+        std::cout << "Received from server: " << buffer << std::endl;
 
         // Process received data (e.g., save to a file)
-        c = &new_buffer[0];
+        c = &buffer[0];
         std::string error_msg;
-        if (int error_code = parse_headers(&new_buffer[0], c, strlen(new_buffer), error_msg); error_code != 0) {
+        if (int error_code = parse_headers(&buffer[0], c, strlen(buffer), error_msg); error_code != 0) {
             if (error_code >= 100) {
                 std::cerr << "Server error" << std::endl;
                 std::cerr << "Error code: " << error_code << std::endl;
@@ -234,7 +240,7 @@ int main(int argc, char *argv[]) {
 
         // Parse file name
         std::string _fileName;
-        for (; *c != '#' && (c - &new_buffer[0]) < strlen(new_buffer); c++) {
+        for (; *c != '#' && (c - &buffer[0]) < strlen(buffer); c++) {
             _fileName += c[0];
         }
         if (*(c - 1) != 0x1c) {
@@ -252,7 +258,7 @@ int main(int argc, char *argv[]) {
 
         // Parse file size
         std::string _file_size;
-        for (; *c != '#' && (c - &new_buffer[0]) < strlen(new_buffer); c++) {
+        for (; *c != '#' && (c - &buffer[0]) < strlen(buffer); c++) {
             _file_size += c[0];
         }
         c++;
@@ -265,55 +271,66 @@ int main(int argc, char *argv[]) {
         std::cout << "Parsed filesize: " << _file_size << std::endl;
 
         // Sending REC request
-        char rec_buffer[max_file_size + 10000];
-        c = &rec_buffer[0];
+        c = &buffer[0];
 
-        sprintf(rec_buffer, "PROTO:%s#REC#\x4", PROTOCOL_VERSION.c_str());
+        sprintf(buffer, "PROTO:%s#REC#\x4", PROTOCOL_VERSION.c_str());
 
-        if (send(sock, rec_buffer, strlen(rec_buffer), 0) == -1) {
+        if (send(sock, buffer, strlen(buffer), 0) == -1) {
             perror("Send failed");
             throw std::runtime_error("Send failed");
         }
 
         // Receive REC response
-        read(rec_buffer, (max_file_size + 10000), sock);
+        size_t bytes_received = read(buffer, BUFFER_SIZE, sock);
 
         // Print the full received data
-        std::cout << "Received from server: " << rec_buffer << std::endl;
+        std::cout << "Received from server: " << buffer << std::endl;
 
-//        // Process received data (e.g., save to a file)
-//        c = &buffer[0];
-//        if (parse_headers(&buffer[0], c, strlen(buffer)) != 0) {
-//            throw std::runtime_error("Parse headers failed");
-//        }
-//
-//        // Write data to file
-//        std::ofstream outFile(fileName); // Create or open a file for writing
-//
-//        if (!outFile.is_open()) {
-//            throw std::runtime_error("Failed to open file");
-//        }
-//
-//        for (; *c != '\x4'; c++) {
-//            if ((c - &buffer[0]) >= strlen(buffer)) {
-//                std::cout << "End of buffer" << std::endl;
-//
-//                // Receive REC response
-//                bytes_received = recv(sock, buffer, sizeof(buffer), 0);
-//                if (bytes_received == -1) {
-//                    perror("Receive failed");
-//                    throw std::runtime_error("Receive failed");
-//                }
-//                std::cout << "Bytes received: " << std::to_string(bytes_received) << std::endl;
-//                c = &buffer[0];
-//            }
-//            outFile << *c;
-////        std::cout << *c << std::endl;
-//        }
-//
-//        outFile.close(); // Close the file
-//
-//        std::cout << "File created successfully" << std::endl;
+        // Process received data (e.g., save to a file)
+        c = &buffer[0];
+        if (int error_code = parse_headers(&buffer[0], c, strlen(buffer), error_msg); error_code != 0) {
+            if (error_code >= 100) {
+                std::cerr << "Server error" << std::endl;
+                std::cerr << "Error code: " << error_code << std::endl;
+                std::cerr << "Error msg: " << error_msg << std::endl;
+                throw std::runtime_error(error_msg);
+            }
+            throw std::runtime_error("Parse headers failed");
+        }
+
+        // Write data to file
+        std::ofstream out_file(fileName); // Create or open a file for writing
+
+        if (!out_file.is_open()) {
+            throw std::runtime_error("Failed to open file");
+        }
+
+        u_int64_t total_bytes = 0;
+        for (; *c != 0x4; c++) {
+            if ((c - &buffer[0]) >= bytes_received) {
+                std::cout << "End of buffer" << std::endl;
+
+                // Receive REC response
+                bytes_received = recv(sock, buffer, BUFFER_SIZE, 0);
+                if (bytes_received == -1) {
+                    perror("Receive failed");
+                    throw std::runtime_error("Receive failed");
+                }
+                std::cout << "Bytes received: " << bytes_received << std::endl;
+//                std::cout << "Received from server: ";
+//                std::cout.write(buffer, bytes_received);
+//                std::cout << std::endl;
+                c = &buffer[0];
+            }
+            out_file << *c;
+            total_bytes++;
+//            std::cout << "c: " << *c << std::endl;
+        }
+
+        out_file.close(); // Close the file
+
+        std::cout << "File created successfully" << std::endl;
+        std::cout << "Total bytes: " << total_bytes << std::endl;
 
     } catch (const std::exception &e) {
         std::cerr << "Exception caught: " << e.what() << std::endl;
