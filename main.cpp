@@ -105,9 +105,9 @@ size_t read(char *buffer, size_t buffer_length, int sock) {
 
         // Print the received data
         std::cout << "Bytes received: " << bytes_received << std::endl;
-//        std::cout << "Receive Buffer: ";
-//        std::cout.write(recv_buffer, bytes_received);
-//        std::cout << std::endl;
+        std::cout << "Receive Buffer: ";
+        std::cout.write(recv_buffer, bytes_received);
+        std::cout << std::endl;
 
 
         for (; (cc - &recv_buffer[0]) < bytes_received; cc++) {
@@ -317,9 +317,9 @@ int main(int argc, char *argv[]) {
                     throw std::runtime_error("Receive failed");
                 }
                 std::cout << "Bytes received: " << bytes_received << std::endl;
-//                std::cout << "Received from server: ";
-//                std::cout.write(buffer, bytes_received);
-//                std::cout << std::endl;
+                std::cout << "Received from server: ";
+                std::cout.write(buffer, bytes_received);
+                std::cout << std::endl;
                 c = &buffer[0];
             }
             out_file << *c;
