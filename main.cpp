@@ -4,7 +4,8 @@
 #include <netinet/in.h>
 #include <csignal>
 #include <cstring>
-#include <fstream>
+
+const std::string PROTOCOL_VERSION = "1.4.8.8";
 
 // Flag to indicate if the program should continue running
 volatile sig_atomic_t interrupted = 0;
@@ -15,14 +16,33 @@ void signal_handler(int signal) {
     interrupted = 1;
 }
 
-int parse_headers(const char *buffer, char *&c, int bytes_received) {
+int parse_error(const char *buffer, char *&c, int bytes_received, std::string &error_msg) {
+    // Parse error code
+    std::string error_code;
+    for (; *c != '#' && (c - &buffer[0]) < bytes_received; c++) {
+        char cc = *c;
+        error_code += cc;
+    }
+    c++;
+
+    // Parse error message
+    for (; *c != '#' && (c - &buffer[0]) < bytes_received; c++) {
+        char cc = *c;
+        error_msg += cc;
+    }
+    c++;
+
+    return std::stoi(error_code);
+}
+
+int parse_headers(const char *buffer, char *&c, int bytes_received, std::string &error_msg) {
     // Parse protocol
     std::string protocol;
     for (; *c != '#' && (c - &buffer[0]) < bytes_received; c++) {
         char cc = *c;
         protocol += cc;
     }
-    if (protocol != "PROTO:1.4.8.8") {
+    if (protocol != "PROTO:" + PROTOCOL_VERSION) {
         std::cerr << "Invalid protocol" << std::endl;
         return 1;
     }
@@ -35,6 +55,12 @@ int parse_headers(const char *buffer, char *&c, int bytes_received) {
         command += cc;
     }
     c++;
+
+    if (command == "ERR") {
+        std::cerr << "Server error" << std::endl;
+        return parse_error(buffer, c, bytes_received, error_msg);
+    }
+
 
     if (command.length() != bytes_received) {
         // Print parsed command
@@ -49,10 +75,12 @@ int parse_headers(const char *buffer, char *&c, int bytes_received) {
     }
     c++;
 
-    if (status == "ERR") {
-        std::cerr << "Server error" << std::endl;
-        return 1;
-    } else if (status != "OK") {
+    if (status != "OK") {
+        if (status == "ERR") {
+            std::cerr << "Server error" << std::endl;
+            return parse_error(buffer, c, bytes_received, error_msg);
+        }
+
         std::cerr << "Unknown status: " << status << std::endl;
         return 1;
     }
@@ -62,8 +90,9 @@ int parse_headers(const char *buffer, char *&c, int bytes_received) {
 
 int read(char *buffer, size_t buffer_length, int sock) {
     char *c = &buffer[0];
+    bool eot = false;
 
-    while (!interrupted && *c != '\0') {
+    while (!interrupted && !eot) {
         char recv_buffer[buffer_length];
         char *cc = &recv_buffer[0];
 
@@ -90,7 +119,7 @@ int read(char *buffer, size_t buffer_length, int sock) {
 
             if (*cc == 0x4) {
                 std::cout << "EOT" << std::endl;
-                *c = '\0';
+                eot = true;
                 std::cout << "Receive End" << std::endl;
                 break;
             }
@@ -141,7 +170,7 @@ int main(int argc, char *argv[]) {
         char *c = &new_buffer[0];
 
         // Sending NEW request
-        sprintf(new_buffer, "PROTO:1.4.8.8#NEW#%s\x1C#\x4", fileName.c_str());
+        sprintf(new_buffer, "PROTO:%s#NEW#%s\x1c#\x4", PROTOCOL_VERSION.c_str(), fileName.c_str());
 
         if (send(sock, new_buffer, strlen(new_buffer), 0) == -1) {
             perror("Send failed");
@@ -188,13 +217,18 @@ int main(int argc, char *argv[]) {
         read(new_buffer, BUFFER_SIZE, sock);
 
         // Print the full received data
-        std::cout << "Received from server: ";
-        std::cout.write(new_buffer, strlen(new_buffer));
-        std::cout << std::endl;
+        std::cout << "Received from server: " << new_buffer << std::endl;
 
         // Process received data (e.g., save to a file)
         c = &new_buffer[0];
-        if (parse_headers(&new_buffer[0], c, strlen(new_buffer)) != 0) {
+        std::string error_msg;
+        if (int error_code = parse_headers(&new_buffer[0], c, strlen(new_buffer), error_msg); error_code != 0) {
+            if (error_code >= 100) {
+                std::cerr << "Server error" << std::endl;
+                std::cerr << "Error code: " << error_code << std::endl;
+                std::cerr << "Error msg: " << error_msg << std::endl;
+                throw std::runtime_error(error_msg);
+            }
             throw std::runtime_error("Parse headers failed");
         }
 
@@ -203,7 +237,7 @@ int main(int argc, char *argv[]) {
         for (; *c != '#' && (c - &new_buffer[0]) < strlen(new_buffer); c++) {
             _fileName += c[0];
         }
-        if (*(c - 1) != 0x1C) {
+        if (*(c - 1) != 0x1c) {
             throw std::runtime_error("Invalid filename");
         }
         _fileName.erase(_fileName.size() - 1);
@@ -234,7 +268,7 @@ int main(int argc, char *argv[]) {
         char rec_buffer[max_file_size + 10000];
         c = &rec_buffer[0];
 
-        sprintf(rec_buffer, "PROTO:1.4.8.8#REC#\x4");
+        sprintf(rec_buffer, "PROTO:%s#REC#\x4", PROTOCOL_VERSION.c_str());
 
         if (send(sock, rec_buffer, strlen(rec_buffer), 0) == -1) {
             perror("Send failed");
@@ -245,9 +279,7 @@ int main(int argc, char *argv[]) {
         read(rec_buffer, (max_file_size + 10000), sock);
 
         // Print the full received data
-        std::cout << "Received from server: ";
-        std::cout.write(rec_buffer, strlen(rec_buffer));
-        std::cout << std::endl;
+        std::cout << "Received from server: " << rec_buffer << std::endl;
 
 //        // Process received data (e.g., save to a file)
 //        c = &buffer[0];
